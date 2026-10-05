@@ -1,7 +1,13 @@
 from src.api_client import CountryLeadersAPI
 from src.html_scraper import WikipediaScraper
+from src.http_session import build_session
 import argparse
-import requests
+import time
+
+#Pause between two Wikipedia fetches. Scraping etiquette: the loop walks every
+#leader of every country, so without it we would hit the site as fast as the
+#network allows.
+REQUEST_DELAY_SECONDS = 0.5
 
 def main():
     """
@@ -36,8 +42,9 @@ def main():
 
         leaders_per_countries[country] = leaders
 
-    #Opening a Session Object to make the requests to wikipedia within one session (speeds things up)
-    with requests.Session() as session:
+    #Opening a Session Object to make the requests to wikipedia within one session
+    #(speeds things up, and retries the transient failures with a backoff)
+    with build_session() as session:
         #Making the WikipediaScraper Object with the session
         wikipedia_scraper = WikipediaScraper(session)
 
@@ -48,13 +55,15 @@ def main():
 
                 leaders_per_countries[country][i]["first_paragraph"] = wikipedia_scraper.get_first_paragraph(html)
 
+                #Wait before the next page so we don't hammer Wikipedia
+                time.sleep(REQUEST_DELAY_SECONDS)
+
     #Creating either a csv or json file with the leaders per countries
     if chose_csv:
         wikipedia_scraper.to_csv_file(file, leaders_per_countries)
-        print(1)
     else:
         wikipedia_scraper.to_json_file(file, leaders_per_countries)
-        print(2)
+    print(f"Saved {file}")
 
 
 

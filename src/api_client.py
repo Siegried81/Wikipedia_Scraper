@@ -1,4 +1,4 @@
-import requests                                         # to send requests on internet
+from src.http_session import build_session               # shared retrying session
 
 class CountryLeadersAPI:
     '''
@@ -6,30 +6,40 @@ class CountryLeadersAPI:
     It acts as the main blueprint to store endpoints, cookies, and internal session logic.
     '''
 
-    def __init__(self, base_url="https://country-leaders.onrender.com"):  # constructor
+    def __init__(self, base_url="https://country-leaders.onrender.com", session=None):  # constructor
         '''
         This is the constructor method of the class.
-        It accepts an optional parameter: 'base_url' (string, with a default value).
+        It accepts two optional parameters: 'base_url' (string, with a default value)
+        and 'session' (a requests.Session, built with retries when not given).
         Inside, it automatically calls the internal 'refresh_cookie' method.
         '''
-        
+
         self.base_url = base_url                        # store var in object
         self.country_endpoint = f"{base_url}/countries"
         self.leaders_endpoint = f"{base_url}/leaders"
         self.cookies_endpoint = f"{base_url}/cookie"
         self.cookies = None
+                                                        # the API is on free hosting and cold-starts with 503s or timeouts,
+                                                        # so every call goes through a session that retries with backoff
+                                                        # and carries the project User-Agent
+        self.session = session if session is not None else build_session()
         self.refresh_cookie()
 
-    def refresh_cookie(self):  
+    def refresh_cookie(self):
         '''
         This is an internal instance method of the class.
         It takes no arguments or parameters except the default 'self'.
-        It calls the external 'requests.get' method to fetch new authentication tokens.
+        It calls the session's 'get' method to fetch new authentication tokens.
         '''
                                                         # Check validity: only fetch a new cookie if we don't have one
         if self.cookies is None:
             try:                                        # search new cookie on server
-                response = requests.get(self.cookies_endpoint, timeout=10)
+                response = self.session.get(self.cookies_endpoint, timeout=10)
+                                                        # only keep the cookies of a successful answer: an error page
+                                                        # carries no valid token and would fail every later call
+                if response.status_code != 200:
+                    print(f"Error getting cookies: status {response.status_code}")
+                    return
                 self.cookies = response.cookies
             except Exception as e:
                 print(f"Error getting cookies: {e}")
@@ -38,16 +48,16 @@ class CountryLeadersAPI:
         '''
         This is an instance method used to fetch supported countries.
         It takes no extra parameters except 'self'.
-        It internally calls 'requests.get' and invokes the 'self.refresh_cookie' method if access is denied.
+        It internally calls the session's 'get' and invokes the 'self.refresh_cookie' method if access is denied.
         '''
         try:
-            response = requests.get(self.country_endpoint, cookies=self.cookies, timeout=10)
-                        
+            response = self.session.get(self.country_endpoint, cookies=self.cookies, timeout=10)
+
                                                         # if access denied or cookie expired
-            if response.status_code == 401 or response.status_code == 403:  
+            if response.status_code == 401 or response.status_code == 403:
                 self.cookies = None                     # reinitialize to force cookie refresh
                 self.refresh_cookie()                   # refresh cookie
-                response = requests.get(self.country_endpoint, cookies=self.cookies, timeout=10)
+                response = self.session.get(self.country_endpoint, cookies=self.cookies, timeout=10)
                 
             return response.json()                      # return the list of countries as json         
         except Exception as e:
@@ -58,18 +68,18 @@ class CountryLeadersAPI:
         '''
         This is an instance method used to fetch leaders for a specific nation.
         It requires one mandatory parameter: 'country' (string representing the country code).
-        It calls 'requests.get' with query arguments and can invoke 'self.refresh_cookie' if needed.
+        It calls the session's 'get' with query arguments and can invoke 'self.refresh_cookie' if needed.
         '''
         try:
             params = {"country": country}               # create dict params to see which country we want
-            response = requests.get(self.leaders_endpoint, params=params, cookies=self.cookies, timeout=10)
-            
+            response = self.session.get(self.leaders_endpoint, params=params, cookies=self.cookies, timeout=10)
+
                                                         # if cookie expired in the loop
             if response.status_code == 401 or response.status_code == 403:
                 print("Token expired, refreshing cookie...")
                 self.cookies = None
                 self.refresh_cookie()
-                response = requests.get(self.leaders_endpoint, params=params, cookies=self.cookies, timeout=10)
+                response = self.session.get(self.leaders_endpoint, params=params, cookies=self.cookies, timeout=10)
             return response.json()
         except Exception as e:                          # convert answer in python and send it back. If network doesn't work: error and empty list
             print(f"Error getting leaders for {country}: {e}")
