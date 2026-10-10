@@ -1,6 +1,7 @@
-from src.api_client import CountryLeadersAPI
+from src.api_client import ApiError, CountryLeadersAPI
 from src.html_scraper import WikipediaScraper
 import argparse
+import sys
 import requests
 
 def main():
@@ -22,19 +23,22 @@ def main():
         chose_csv = True
         file = "leaders.csv"
 
-    #Create a CountryLeadersAPI with our chosen api
+    #Create a CountryLeadersAPI with our chosen api. A failing API stops the
+    #run with a message instead of producing an empty file that looks complete.
     base_url = "https://country-leaders.onrender.com"
-    country_leader_api = CountryLeadersAPI(base_url)
+    try:
+        country_leader_api = CountryLeadersAPI(base_url)
 
-    #Getting a list of countries from the api
-    countries = country_leader_api.get_countries()
+        #Getting a list of countries from the api
+        countries = country_leader_api.get_countries()
 
-    #Making a dictionary, keys = countries and values = leaders (list of dictionaries obtained from the api)
-    leaders_per_countries = {}
-    for country in countries:
-        leaders = country_leader_api.get_leaders(country)
-
-        leaders_per_countries[country] = leaders
+        #Making a dictionary, keys = countries and values = leaders (list of dictionaries obtained from the api)
+        leaders_per_countries = {}
+        for country in countries:
+            leaders_per_countries[country] = country_leader_api.get_leaders(country)
+    except (ApiError, requests.RequestException) as exc:
+        print(f"The country-leaders API is unavailable, nothing written: {exc}", file=sys.stderr)
+        sys.exit(1)
 
     #Opening a Session Object to make the requests to wikipedia within one session (speeds things up)
     with requests.Session() as session:
@@ -51,10 +55,10 @@ def main():
     #Creating either a csv or json file with the leaders per countries
     if chose_csv:
         wikipedia_scraper.to_csv_file(file, leaders_per_countries)
-        print(1)
     else:
         wikipedia_scraper.to_json_file(file, leaders_per_countries)
-        print(2)
+    total = sum(len(leaders) for leaders in leaders_per_countries.values())
+    print(f"Wrote {total} leaders from {len(leaders_per_countries)} countries to {file}")
 
 
 
