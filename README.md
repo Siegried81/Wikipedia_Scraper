@@ -29,7 +29,7 @@ wikipedia-scraper/
 
 ## HOW TO SETUP AND RUN
 
-To set up the project locally inside a clean virtual environment, run git clone https://github.com/Max96H/Wikipedia_Scraper/tree/main and then go inside the folder using cd wikipedia-scraper.
+To set up the project locally inside a clean virtual environment, run `git clone https://github.com/Siegried81/Wikipedia_Scraper.git` and then go inside the folder using `cd Wikipedia_Scraper`. (This repository is a fork of [Max96H/Wikipedia_Scraper](https://github.com/Max96H/Wikipedia_Scraper), the team repository the exercise was built in.)
 
 Create your virtual environment with python3 -m venv wikipedia_scraper_env. Activate it on Windows with source wikipedia_scraper_env/Scripts/activate (or on Linux/macOS with source wikipedia_scraper_env/bin/activate). 
 Once activated, install the libraries with pip install -r requirements.txt.
