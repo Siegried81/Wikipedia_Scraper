@@ -1,3 +1,7 @@
+# What main.py and src/ import. The previous file was a `pip list` dump of a
+# whole environment (Jupyter included), which is not a requirements file.
 requests>=2.31
 beautifulsoup4>=4.12
+
+# Tests
 pytest>=8.0

@@ -1,148 +1,107 @@
+"""The API client and the shared session, with no network and no cookie server.
+
+What matters is the difference between "the API has nothing" and "the API is
+down". Both used to come back as `[]`, so an outage produced an empty dataset
+that looked complete. A fake session is injected into the client, the way the
+client now makes every call, so nothing leaves the machine.
 """
-Tests for CountryLeadersAPI and the shared session factory.
-A fake session is injected into the client, so no HTTP request leaves the
-machine and the cookie/status logic can be checked without the hosted API.
-"""
+
+import sys
+from pathlib import Path
+from unittest.mock import MagicMock
+
 import pytest
-from src.api_client import CountryLeadersAPI
-from src.http_session import USER_AGENT, build_session
+import requests
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from src.api_client import ApiError, CountryLeadersAPI  # noqa: E402
+from src.http_session import USER_AGENT, build_session  # noqa: E402
 
 
-class FakeResponse:
-    """Minimal stand-in for requests.Response."""
-
-    def __init__(self, status_code=200, payload=None, cookies="cookie-jar"):
-        self.status_code = status_code
-        self.payload = payload
-        self.cookies = cookies
-
-    def json(self):
-        return self.payload
-
-
-class FakeSession:
-    """
-    Session double returning a scripted response per endpoint path.
-    :param: dict of url fragment -> list of responses to serve in order
-    """
-
-    def __init__(self, script):
-        self.script = script
-        self.calls = []
-
-    def get(self, url, **kwargs):
-        self.calls.append((url, kwargs))
-        for fragment, responses in self.script.items():
-            if url.endswith(fragment):
-                return responses.pop(0) if len(responses) > 1 else responses[0]
-        raise AssertionError(f"Unexpected url: {url}")
+def _response(status=200, payload=None, json_error=False):
+    response = MagicMock()
+    response.status_code = status
+    response.cookies = {"user_cookie": "abc"}
+    if json_error:
+        response.json.side_effect = ValueError("not JSON")
+    else:
+        response.json.return_value = payload
+    if status >= 400:
+        response.raise_for_status.side_effect = requests.HTTPError(f"HTTP {status}")
+    else:
+        response.raise_for_status.return_value = None
+    return response
 
 
-def make_client(script):
-    """Build a client wired to a FakeSession, returning both."""
-    session = FakeSession(script)
-    return CountryLeadersAPI(session=session), session
+def _client_with(responses):
+    """A client whose constructor cookie call and later calls replay `responses`."""
+    session = MagicMock()
+    session.get.side_effect = [_response()] + list(responses)
+    return CountryLeadersAPI("https://api.test", session=session), session
 
 
-def test_refresh_cookie_stores_cookies_on_success():
-    client, _ = make_client({"/cookie": [FakeResponse(200, cookies="good")]})
-
-    assert client.cookies == "good"
-
-
-def test_refresh_cookie_ignores_cookies_on_error_status():
-    """A 503 cold-start answer carries no valid token, so it must not be kept."""
-    client, _ = make_client({"/cookie": [FakeResponse(503, cookies="error-page")]})
-
-    assert client.cookies is None
+def test_a_server_error_is_an_error_not_an_empty_list():
+    client, _ = _client_with([_response(500, payload={"message": "boom"})])
+    with pytest.raises(ApiError):
+        client.get_countries()
 
 
-def test_refresh_cookie_survives_a_network_error():
-    class ExplodingSession:
-        def get(self, url, **kwargs):
-            raise ConnectionError("boom")
-
-    client = CountryLeadersAPI(session=ExplodingSession())
-
-    assert client.cookies is None
-
-
-def test_get_countries_returns_the_payload():
-    client, session = make_client({
-        "/cookie": [FakeResponse(200)],
-        "/countries": [FakeResponse(200, ["fr", "be"])],
-    })
-
-    assert client.get_countries() == ["fr", "be"]
-    #Cookie call plus one countries call, nothing more
-    assert len(session.calls) == 2
+def test_an_expired_cookie_is_renewed_once_and_the_call_retried():
+    client, session = _client_with([
+        _response(401, payload={"message": "cookie expired"}),  # first data call
+        _response(200, payload={"user_cookie": "new"}),          # cookie refresh
+        _response(200, payload=["be", "fr", "us"]),              # retried data call
+    ])
+    assert client.get_countries() == ["be", "fr", "us"]
+    assert session.get.call_count == 4  # constructor cookie + 401 + refresh + retry
 
 
-def test_get_countries_refreshes_the_cookie_once_on_401():
-    client, session = make_client({
-        "/cookie": [FakeResponse(200, cookies="first"), FakeResponse(200, cookies="second")],
-        "/countries": [FakeResponse(401), FakeResponse(200, ["fr"])],
-    })
-
-    assert client.get_countries() == ["fr"]
-    assert client.cookies == "second"
+def test_a_body_that_is_not_json_is_an_error():
+    client, _ = _client_with([_response(200, json_error=True)])
+    with pytest.raises(ApiError):
+        client.get_leaders("be")
 
 
-def test_get_countries_returns_empty_list_on_network_error():
-    class ExplodingSession:
-        def __init__(self):
-            self.first = True
+def test_the_wrong_shape_is_an_error_even_under_200():
+    client, _ = _client_with([_response(200, payload={"error": "unexpected"})])
+    with pytest.raises(ApiError, match="expected list"):
+        client.get_countries()
 
-        def get(self, url, **kwargs):
-            if self.first and url.endswith("/cookie"):
-                self.first = False
-                return FakeResponse(200)
-            raise ConnectionError("boom")
 
-    client = CountryLeadersAPI(session=ExplodingSession())
+def test_a_genuinely_empty_answer_is_still_an_empty_list():
+    client, _ = _client_with([_response(200, payload=[])])
+    assert client.get_leaders("xx") == []
 
-    assert client.get_countries() == []
+
+def test_a_network_failure_is_an_error():
+    client, _ = _client_with([requests.ConnectionError("DNS failure")])
+    with pytest.raises(ApiError):
+        client.get_countries()
+
+
+def test_a_cookie_from_an_error_page_is_refused():
+    session = MagicMock()
+    session.get.side_effect = [_response(503)]
+    with pytest.raises(requests.HTTPError):
+        CountryLeadersAPI("https://api.test", session=session)
 
 
 def test_get_leaders_passes_the_country_as_a_query_param():
-    client, session = make_client({
-        "/cookie": [FakeResponse(200)],
-        "/leaders": [FakeResponse(200, [{"id": "Q157"}])],
-    })
-
+    client, session = _client_with([_response(200, payload=[{"id": "Q157"}])])
     assert client.get_leaders("fr") == [{"id": "Q157"}]
-    assert session.calls[-1][1]["params"] == {"country": "fr"}
+    assert session.get.call_args.kwargs["params"] == {"country": "fr"}
 
 
-def test_get_leaders_returns_empty_list_on_network_error():
-    class ExplodingSession:
-        def __init__(self):
-            self.first = True
-
-        def get(self, url, **kwargs):
-            if self.first and url.endswith("/cookie"):
-                self.first = False
-                return FakeResponse(200)
-            raise ConnectionError("boom")
-
-    client = CountryLeadersAPI(session=ExplodingSession())
-
-    assert client.get_leaders("fr") == []
-
-
-def test_build_session_has_user_agent_with_contact():
+def test_build_session_identifies_the_project():
     session = build_session()
-
     assert session.headers["User-Agent"] == USER_AGENT
-    assert "contact:" in USER_AGENT
+    assert "github.com/Siegried81/Wikipedia_Scraper" in USER_AGENT
 
 
 @pytest.mark.parametrize("scheme", ["https://", "http://"])
 def test_build_session_mounts_a_retrying_adapter(scheme):
-    session = build_session()
-
-    retries = session.get_adapter(f"{scheme}example.org").max_retries
-
+    retries = build_session().get_adapter(f"{scheme}example.org").max_retries
     assert retries.total == 3
     assert retries.backoff_factor == 1
     assert 503 in retries.status_forcelist

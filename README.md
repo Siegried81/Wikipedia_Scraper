@@ -5,7 +5,7 @@ This project is a modular Python web scraping pipeline built in 3 days. It autom
 ## KEY FEATURES
 
 - **Dynamic File Exporter:** Built with the native argparse library, allowing the user to select the output format directly from the terminal using dedicated parameters. It flattens the nested `{country: [leaders]}` structure into one row per leader (with the country as an extra column) and writes it with `csv.DictWriter`, so the .csv is properly quoted and readable by pandas, or exports a standard structured .json database. Both files are written in UTF-8 with unescaped accents.
-- **API Client with Cookie Refresh:** Automatically manages session cookies and refreshes them if they expire during execution. The cookie is only kept when the server answers 200.
+- **API Client with Cookie Refresh:** Automatically manages session cookies and refreshes them if they expire during execution. The cookie is only kept when the server answers 200, and an unusable answer (an error status, a body that is not JSON, the wrong shape) raises `ApiError` instead of returning an empty list, so an outage cannot pass for a country with no leaders.
 - **HTML Scraper:** Grabs and cleans the first biographical paragraph of a leader's Wikipedia page using BeautifulSoup and regex.
 - **Resilient HTTP:** A single shared `requests.Session` (src/http_session.py) retries 429/5xx answers and timeouts with an exponential backoff, and sends one descriptive User-Agent with a contact address on every request. The main loop also waits 0.5 s between two Wikipedia pages as scraping etiquette.
 - **OOP Architecture:** Clear separation of concerns between API requests (src/api_client.py), HTML processing (src/html_scraper.py), and the main orchestration (main.py).
@@ -37,7 +37,7 @@ wikipedia-scraper/
 
 ## HOW TO SETUP AND RUN
 
-To set up the project locally inside a clean virtual environment, run `git clone https://github.com/Max96H/Wikipedia_Scraper.git` and then go inside the folder using `cd Wikipedia_Scraper`.
+To set up the project locally inside a clean virtual environment, run `git clone https://github.com/Siegried81/Wikipedia_Scraper.git` and then go inside the folder using `cd Wikipedia_Scraper`. (This repository is a fork of [Max96H/Wikipedia_Scraper](https://github.com/Max96H/Wikipedia_Scraper), the team repository the exercise was built in.)
 
 Create your virtual environment with `python3 -m venv wikipedia_scraper_env`, then activate it:
 
@@ -62,22 +62,32 @@ To run the test suite, execute `python -m pytest` from the project root. All net
 
 ```
 def main():
+    """
+    Main function of this wiki scraper project
+    """
 
+    #Create an ArgumentParser Object 
     parser = argparse.ArgumentParser(description="A wiki scraper to make json/csv file")
+    #Add argument '--file'
     parser.add_argument('--file', type=str, default='json', help='The type of file to create (json|csv)')
+    #Parse the command line arguments
     args = parser.parse_args()
 
+    #Establish if we are gonna output a json file or a csv file depending on the command line arguments
     chose_csv = False
     file = "leaders.json"
     if args.file == "csv":
         chose_csv = True
         file = "leaders.csv"
 
+    #Create a CountryLeadersAPI with our chosen api
     base_url = "https://country-leaders.onrender.com"
     country_leader_api = CountryLeadersAPI(base_url)
 
+    #Getting a list of countries from the api
     countries = country_leader_api.get_countries()
 
+    #Making a dictionary, keys = countries and values = leaders (list of dictionaries obtained from the api)
     leaders_per_countries = {}
     for country in countries:
         leaders = country_leader_api.get_leaders(country)
@@ -87,6 +97,7 @@ def main():
     with build_session() as session:
         wikipedia_scraper = WikipediaScraper(session)
 
+        #Going through each leader to add a paragraph from their wikipedia page
         for country, leaders in leaders_per_countries.items():
             for i, leader in enumerate(leaders):
                 html = wikipedia_scraper.fetch_html(leader["wikipedia_url"])
@@ -111,7 +122,7 @@ if __name__ == "__main__":
 We split the core logic into two tracks before plugging everything together in the main file:
 
 ### The API Part (src/api_client.py)
-This file contains the CountryLeadersAPI class. Its main job is to fetch raw JSON data from the server. It handles security by checking for 401 and 403 HTTP status codes. If a token expires while looping through the data, the refresh_cookie method triggers automatically to get a new one, and it only stores the cookie when the answer is a 200 (an error page carries no usable token). It uses get_countries to see which countries are supported and get_leaders to fetch the list of politicians for a specific country. All of its calls go through the shared retrying session.
+This file contains the CountryLeadersAPI class. Its main job is to fetch raw JSON data from the server. It handles security by checking for 401 and 403 HTTP status codes. If a token expires while looping through the data, the refresh_cookie method triggers automatically to get a new one, and it only stores the cookie when the answer is a 200 (an error page carries no usable token). Any other failure raises `ApiError`; `main.py` then exits with status 1 and writes nothing. It uses get_countries to see which countries are supported and get_leaders to fetch the list of politicians for a specific country. All of its calls go through the shared retrying session.
 
 ### The Session Part (src/http_session.py)
 This small module holds the two things every request needs: the USER_AGENT constant (tool name plus a contact address, as Wikipedia's robot policy asks for) and build_session, which returns a requests.Session with an HTTPAdapter/Retry mounted on it. The API runs on free hosting and cold-starts with 503s or timeouts, so three retries with an exponential backoff are what make the first run of the day work.

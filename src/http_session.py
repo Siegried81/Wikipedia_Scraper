@@ -4,10 +4,11 @@ from urllib3.util.retry import Retry
 
 # One descriptive User-Agent for every request this project sends.
 # Wikipedia's robot policy asks for a tool name and a way to reach the operator,
-# so the contact address is part of the string and not optional.
+# so a URL where the operator can be reached is part of the string. The
+# repository rather than a personal address: this file is public.
 USER_AGENT = (
     "WikipediaScraperBot/1.0 (BeCode student project; "
-    "contact: csiegried@yahoo.fr) python-requests"
+    "+https://github.com/Siegried81/Wikipedia_Scraper) python-requests"
 )
 
 

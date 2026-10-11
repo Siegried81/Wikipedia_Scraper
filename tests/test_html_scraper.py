@@ -50,7 +50,7 @@ def test_fetch_html_sends_user_agent_with_contact():
 
     user_agent = session.calls[0][1]["headers"]["User-Agent"]
     assert "WikipediaScraperBot" in user_agent
-    assert "contact:" in user_agent
+    assert "github.com/Siegried81/Wikipedia_Scraper" in user_agent
 
 
 def test_fetch_html_returns_empty_string_on_bad_status():
