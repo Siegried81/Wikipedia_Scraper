@@ -1,5 +1,7 @@
 import requests
 
+from src.http_session import build_session
+
 
 class ApiError(Exception):
     """The country-leaders API did not give a usable answer.
@@ -16,14 +18,20 @@ class CountryLeadersAPI:
     '''
     Manages connections to the country leaders REST API: endpoints, the
     session cookie the API requires, and the retry when that cookie expires.
+
+    Every call goes through one `requests.Session` built by `build_session()`:
+    the API is on free hosting and cold-starts with 503s or timeouts, so the
+    session retries transient failures with backoff and carries the project
+    User-Agent. A session can be injected, which is how the tests run offline.
     '''
 
-    def __init__(self, base_url="https://country-leaders.onrender.com", timeout=10):
+    def __init__(self, base_url="https://country-leaders.onrender.com", timeout=10, session=None):
         self.base_url = base_url
         self.country_endpoint = f"{base_url}/countries"
         self.leaders_endpoint = f"{base_url}/leaders"
         self.cookies_endpoint = f"{base_url}/cookie"
         self.timeout = timeout
+        self.session = session if session is not None else build_session()
         self.cookies = None
         self.refresh_cookie()
 
@@ -32,9 +40,9 @@ class CountryLeadersAPI:
         Fetch a new cookie from the API. The cookie is the API's session
         token; it expires, and 401/403 on a data call is the signal to renew it.
         '''
-        response = requests.get(self.cookies_endpoint, timeout=self.timeout)
+        response = self.session.get(self.cookies_endpoint, timeout=self.timeout)
         # A cookie taken from an error page is not a cookie: the next data call
-        # fails with 401 again and the retry loop below would spin on it.
+        # fails with 401 again and the retry below would spin on it.
         response.raise_for_status()
         self.cookies = response.cookies
 
@@ -44,15 +52,14 @@ class CountryLeadersAPI:
 
         401/403 means the cookie expired: renew it once and retry once. Any
         other non-2xx status, a body that is not JSON, or JSON of the wrong
-        shape raises ApiError. `requests.get` used to be followed by
-        `.json()` with no status check, so an HTTP 500 whose body happened to
-        be JSON was returned as if it were the data.
+        shape raises ApiError. A 500 whose body happened to be JSON used to be
+        returned as if it were the data.
         '''
         try:
-            response = requests.get(url, params=params, cookies=self.cookies, timeout=self.timeout)
+            response = self.session.get(url, params=params, cookies=self.cookies, timeout=self.timeout)
             if response.status_code in (401, 403):
                 self.refresh_cookie()
-                response = requests.get(url, params=params, cookies=self.cookies, timeout=self.timeout)
+                response = self.session.get(url, params=params, cookies=self.cookies, timeout=self.timeout)
             response.raise_for_status()
             payload = response.json()
         except (requests.RequestException, ValueError) as exc:
